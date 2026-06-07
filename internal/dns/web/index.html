@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DNS Control Plane</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#272c37;
+    --txt:#e6e9ef; --mut:#9aa3b2; --accent:#4f8cff; --accent2:#2f6fe0;
+    --ok:#3fb950; --warn:#d29922; --err:#f85149; --radius:10px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft Yahei",sans-serif;background:var(--bg);color:var(--txt)}
+  header{display:flex;align-items:center;gap:14px;padding:10px 18px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
+  header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.2px}
+  header .grow{flex:1}
+  select,input,button,textarea{font:inherit;color:var(--txt);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;outline:none}
+  select:focus,input:focus,textarea:focus{border-color:var(--accent)}
+  button{cursor:pointer;background:var(--accent);border-color:var(--accent);color:#fff;font-weight:500}
+  button:hover{background:var(--accent2)}
+  button.ghost{background:transparent;border-color:var(--line);color:var(--mut)}
+  button.ghost:hover{color:var(--txt);border-color:var(--mut)}
+  button.danger{background:transparent;border-color:#5a2a2a;color:#ff8d85}
+  button.danger:hover{background:#2a1414}
+  button.sm{padding:4px 9px;font-size:12px;border-radius:7px}
+  .wrap{display:flex;min-height:calc(100vh - 53px)}
+  nav.side{width:170px;border-right:1px solid var(--line);background:var(--panel);padding:12px 8px;display:flex;flex-direction:column;gap:2px}
+  nav.side a{display:flex;gap:9px;align-items:center;padding:9px 11px;border-radius:8px;color:var(--mut);text-decoration:none;font-weight:500}
+  nav.side a:hover{background:var(--panel2);color:var(--txt)}
+  nav.side a.active{background:var(--accent);color:#fff}
+  main{flex:1;padding:20px 24px;max-width:1100px}
+  h2{font-size:17px;margin:0 0 4px}
+  .sub{color:var(--mut);margin:0 0 16px;font-size:13px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);margin-bottom:16px;overflow:hidden}
+  .card .hd{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--line);font-weight:600}
+  .card .hd .grow{flex:1}
+  .card .bd{padding:14px}
+  table{width:100%;border-collapse:collapse}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);font-size:13px;vertical-align:middle}
+  th{color:var(--mut);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.4px}
+  tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600;background:var(--panel2);border:1px solid var(--line);color:var(--mut)}
+  .tag.ok{color:var(--ok);border-color:#1f4527}
+  .tag.t{color:var(--accent);border-color:#27406b}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  label.f{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--mut)}
+  .empty{color:var(--mut);padding:24px;text-align:center}
+  .muted{color:var(--mut)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+  #toast{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px;z-index:50}
+  .toast{background:var(--panel2);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:10px 14px;max-width:380px;box-shadow:0 6px 24px rgba(0,0,0,.4)}
+  .toast.err{border-left-color:var(--err)} .toast.ok{border-left-color:var(--ok)}
+  .banner{background:#2a2410;border:1px solid #564a16;color:#f0d98c;padding:12px 14px;border-radius:var(--radius);margin-bottom:16px;display:flex;gap:12px;align-items:center}
+  .banner .grow{flex:1}
+  dialog{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:var(--radius);padding:0;max-width:480px;width:92%}
+  dialog::backdrop{background:rgba(0,0,0,.5)}
+  dialog .hd{padding:13px 16px;border-bottom:1px solid var(--line);font-weight:600}
+  dialog .bd{padding:16px;display:flex;flex-direction:column;gap:12px}
+  dialog .ft{padding:12px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+  .hidden{display:none!important}
+  code.k{background:var(--panel2);padding:1px 6px;border-radius:5px;border:1px solid var(--line)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🌐 DNS Control Plane</h1>
+  <span class="tag" id="verTag">—</span>
+  <span class="grow"></span>
+  <label class="f" style="flex-direction:row;align-items:center;gap:6px">
+    <span>工作区</span>
+    <select id="wsSel" style="min-width:180px"></select>
+  </label>
+  <span class="muted" id="userBox">…</span>
+</header>
+
+<div class="wrap">
+  <nav class="side">
+    <a data-view="providers" class="active"><span>🔑</span> Providers</a>
+    <a data-view="zones"><span>🗂️</span> Zones</a>
+    <a data-view="records"><span>📄</span> Records</a>
+    <a data-view="audit"><span>📜</span> Audit</a>
+  </nav>
+  <main id="main"><div class="empty">加载中…</div></main>
+</div>
+
+<div id="toast"></div>
+
+<!-- add-provider dialog -->
+<dialog id="provDlg">
+  <form method="dialog" id="provForm">
+    <div class="hd">添加 Provider</div>
+    <div class="bd">
+      <label class="f">类型
+        <select id="pType"><option value="namecom">Name.com</option><option value="cloudflare">Cloudflare</option></select>
+      </label>
+      <label class="f">名称<input id="pName" placeholder="如 cf-main" required></label>
+      <div id="credFields"></div>
+      <label class="f">HTTP 代理(可选)<input id="pProxy" placeholder="http://127.0.0.1:7890"></label>
+    </div>
+    <div class="ft"><button type="button" class="ghost" data-close>取消</button><button id="pSave">保存</button></div>
+  </form>
+</dialog>
+
+<!-- record dialog -->
+<dialog id="recDlg">
+  <form method="dialog" id="recForm">
+    <div class="hd" id="recDlgTitle">记录</div>
+    <div class="bd">
+      <div class="row">
+        <label class="f" style="width:120px">类型
+          <select id="rType"><option>A</option><option>AAAA</option><option>CNAME</option><option>TXT</option><option>MX</option><option>NS</option><option>SRV</option></select>
+        </label>
+        <label class="f" style="flex:1">名称 (host, @ 表示根域)<input id="rName" placeholder="www 或 @"></label>
+      </div>
+      <label class="f">内容<input id="rContent" placeholder="1.1.1.1 / target / text" required></label>
+      <div class="row">
+        <label class="f" style="width:120px">TTL<input id="rTTL" type="number" value="300"></label>
+        <label class="f" style="width:120px">优先级 (MX/SRV)<input id="rPrio" type="number" placeholder="—"></label>
+        <label class="f" id="rProxiedWrap" style="flex-direction:row;align-items:center;gap:6px;margin-top:18px"><input type="checkbox" id="rProxied" style="width:auto"> Proxied (CF)</label>
+      </div>
+    </div>
+    <div class="ft"><button type="button" class="ghost" data-close>取消</button><button id="rSave">保存</button></div>
+  </form>
+</dialog>
+
+<script>
+const $ = s => document.querySelector(s);
+const el = (t,a={},...c)=>{const e=document.createElement(t);for(const k in a){if(k==="class")e.className=a[k];else if(k==="html")e.innerHTML=a[k];else if(k.startsWith("on"))e.addEventListener(k.slice(2),a[k]);else e.setAttribute(k,a[k]);}c.flat().forEach(x=>e.append(x?.nodeType?x:document.createTextNode(x??"")));return e;};
+const esc = s => (s??"").toString().replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+
+const TOKEN_KEY="polar_dns_token", WS_KEY="polar_dns_ws";
+let state={me:null,teams:[],ws:null,providers:[],zones:[],zoneSel:null,records:[],view:"providers"};
+
+function toast(msg,kind=""){const t=el("div",{class:"toast "+kind},msg);$("#toast").append(t);setTimeout(()=>t.remove(),4200);}
+
+async function api(path,opts={}){
+  const h=Object.assign({},opts.headers||{});
+  const tok=localStorage.getItem(TOKEN_KEY);
+  if(tok) h["Authorization"]="Bearer "+tok;
+  if(state.ws) h["X-Workspace-Id"]=state.ws;
+  if(opts.body){h["Content-Type"]="application/json";opts.body=JSON.stringify(opts.body);}
+  const res=await fetch(path,{...opts,headers:h,credentials:"include"});
+  if(res.status===401){promptToken();throw new Error("未登录 / 会话失效");}
+  const txt=await res.text();
+  let data=null; try{data=txt?JSON.parse(txt):null}catch{data=txt}
+  if(!res.ok){const e=new Error((data&&data.error)||txt||("HTTP "+res.status));e.status=res.status;e.data=data;throw e;}
+  return data;
+}
+
+function promptToken(){
+  const cur=localStorage.getItem(TOKEN_KEY)||"";
+  const t=prompt("需要登录。粘贴 dock 的 access_token(或先到 dock 登录使 cookie 生效):",cur);
+  if(t!==null){localStorage.setItem(TOKEN_KEY,t.trim());location.reload();}
+}
+
+async function boot(){
+  $("#verTag").textContent="loading";
+  // identity (proxied to dock)
+  try{state.me=await api("/api/me");}catch(e){ /* 401 already handled */ return; }
+  $("#userBox").innerHTML=`👤 ${esc(state.me.username)} <span class="muted">(${esc(state.me.role||"")})</span>`;
+  try{const t=await api("/api/teams");state.teams=t.teams||t||[];}catch{state.teams=[];}
+  state.ws=localStorage.getItem(WS_KEY)|| (state.teams[0]&&state.teams[0].id) || "";
+  const sel=$("#wsSel");sel.innerHTML="";
+  state.teams.forEach(t=>sel.append(el("option",{value:t.id},t.name||t.slug||t.id)));
+  if(state.ws) sel.value=state.ws;
+  sel.onchange=()=>{state.ws=sel.value;localStorage.setItem(WS_KEY,state.ws);render();};
+  try{const h=await fetch("/healthz").then(r=>r.json());$("#verTag").textContent=h.plugin+" "+h.version;}catch{$("#verTag").textContent="dns";}
+  document.querySelectorAll("nav.side a").forEach(a=>a.onclick=()=>{state.view=a.dataset.view;document.querySelectorAll("nav.side a").forEach(x=>x.classList.toggle("active",x===a));render();});
+  render();
+}
+
+async function render(){
+  const m=$("#main");m.innerHTML='<div class="empty">加载中…</div>';
+  try{
+    if(state.view==="providers") await viewProviders(m);
+    else if(state.view==="zones") await viewZones(m);
+    else if(state.view==="records") await viewRecords(m);
+    else if(state.view==="audit") await viewAudit(m);
+  }catch(e){
+    if(e.status===403){m.innerHTML="";m.append(accessBanner());return;}
+    m.innerHTML="";m.append(el("div",{class:"empty"},"加载失败:"+e.message));
+  }
+}
+
+function accessBanner(){
+  const isAdmin=state.me&&(state.me.role==="admin"||state.me.site_admin);
+  const b=el("div",{class:"banner"},
+    el("div",{class:"grow"},`当前工作区未被授权访问 DNS 插件(workspace ${state.ws||"—"})。`),
+  );
+  if(isAdmin){
+    b.append(el("button",{class:"sm",onclick:async()=>{
+      try{await api("/api/admin/workspace-plugin-access",{method:"PUT",body:{workspace_id:state.ws,plugin:"dns",enabled:true}});toast("已授权,刷新中…","ok");setTimeout(()=>render(),600);}
+      catch(e){toast("授权失败:"+e.message,"err");}
+    }},"授权此工作区"));
+  }
+  return b;
+}
+
+/* ---------- Providers ---------- */
+async function viewProviders(m){
+  const d=await api("/api/dns/providers");state.providers=d.providers||[];
+  m.innerHTML="";
+  m.append(el("h2",{},"Providers"),el("p",{class:"sub"},"DNS 服务商账户(凭据加密存储,不回显)。"));
+  const card=el("div",{class:"card"});
+  card.append(el("div",{class:"hd"},el("span",{class:"grow"},"账户"),el("button",{class:"sm",onclick:()=>openProvDlg(null)},"+ 添加")));
+  if(!state.providers.length){card.append(el("div",{class:"empty"},"暂无 provider,点右上「添加」。"));}
+  else{
+    const tb=el("table");tb.append(el("tr",{html:"<th>名称</th><th>类型</th><th>加密</th><th>代理</th><th></th>"}));
+    state.providers.forEach(p=>{
+      tb.append(el("tr",{},
+        el("td",{},el("b",{},p.name)),
+        el("td",{},el("span",{class:"tag t"},p.provider_type)),
+        el("td",{},p.encrypted?el("span",{class:"tag ok"},"AES-GCM"):el("span",{class:"tag"},"明文")),
+        el("td",{class:"mono muted"},p.proxy_url||"—"),
+        el("td",{},
+          el("button",{class:"sm ghost",onclick:()=>syncProvider(p)},"同步"),
+          " ",
+          el("button",{class:"sm ghost",onclick:()=>openProvDlg(p)},"编辑"),
+          " ",
+          el("button",{class:"sm danger",onclick:()=>delProvider(p)},"删除"),
+        ),
+      ));
+    });
+    card.append(tb);
+  }
+  m.append(card);
+}
+async function syncProvider(p){toast("同步 "+p.name+" …");try{const r=await api(`/api/dns/providers/${p.id}/sync`,{method:"POST"});toast(`同步完成:${r.zones} zones / ${r.records} records`,"ok");}catch(e){toast("同步失败:"+e.message,"err");}}
+async function delProvider(p){if(!confirm(`删除 provider「${p.name}」?其 zone/record 缓存会级联删除。`))return;try{await api(`/api/dns/providers/${p.id}`,{method:"DELETE"});toast("已删除","ok");render();}catch(e){toast(e.message,"err");}}
+
+const CRED={namecom:[["username","用户名"],["token","API Token"]],cloudflare:[["api_token","API Token"]]};
+let editingProv=null;
+function renderCredFields(){const t=$("#pType").value;const box=$("#credFields");box.innerHTML="";const editing=!!(editingProv&&editingProv.id);CRED[t].forEach(([k,label])=>{const attrs={id:"cred_"+k,"data-cred":k};if(editing)attrs.placeholder="留空则不变";else attrs.required="true";box.append(el("label",{class:"f"},label+(editing?"(留空不变)":""),el("input",attrs)));});}
+function openProvDlg(prov){
+  editingProv=prov||null;
+  $("#provForm").reset();
+  $("#pType").onchange=renderCredFields;
+  $("#pType").value=prov?prov.provider_type:"namecom";
+  $("#pType").disabled=!!prov;            // type immutable on edit
+  document.querySelector("#provDlg .hd").textContent=prov?"编辑 Provider":"添加 Provider";
+  $("#pName").value=prov?prov.name:"";
+  $("#pProxy").value=prov?(prov.proxy_url||""):"";
+  renderCredFields();
+  $("#provDlg").showModal();
+}
+$("#provForm").addEventListener("submit",async(ev)=>{
+  ev.preventDefault();
+  const type=$("#pType").value;const name=$("#pName").value.trim();const proxy=$("#pProxy").value.trim();
+  const cred={};let credFilled=false;
+  document.querySelectorAll("#credFields [data-cred]").forEach(i=>{if(i.value.trim()){cred[i.dataset.cred]=i.value.trim();credFilled=true;}});
+  try{
+    if(editingProv){
+      const body={name,proxy_url:proxy};if(credFilled)body.credential=cred;
+      await api(`/api/dns/providers/${editingProv.id}`,{method:"PATCH",body});
+      toast("已更新 "+name,"ok");
+    }else{
+      await api("/api/dns/providers",{method:"POST",body:{provider_type:type,name,credential:cred,proxy_url:proxy}});
+      toast("已添加 "+name,"ok");
+    }
+    $("#provDlg").close();render();
+  }catch(e){toast((editingProv?"更新":"添加")+"失败:"+e.message,"err");}
+});
+
+/* ---------- Zones ---------- */
+async function viewZones(m){
+  const d=await api("/api/dns/zones");state.zones=d.zones||[];
+  m.innerHTML="";m.append(el("h2",{},"Zones"),el("p",{class:"sub"},"已同步的区(远端为准,本地为缓存)。点「记录」查看。"));
+  const card=el("div",{class:"card"});card.append(el("div",{class:"hd"},"区"));
+  if(!state.zones.length){card.append(el("div",{class:"empty"},"暂无 zone。到 Providers 点「同步」拉取。"));}
+  else{
+    const tb=el("table");tb.append(el("tr",{html:"<th>域名</th><th>Provider</th><th>最近同步</th><th></th>"}));
+    const pmap=Object.fromEntries(state.providers.map(p=>[p.id,p.name]));
+    state.zones.forEach(z=>{tb.append(el("tr",{},
+      el("td",{},el("b",{},z.zone_name)),
+      el("td",{class:"muted"},pmap[z.provider_id]||z.provider_id.slice(0,10)),
+      el("td",{class:"muted"},z.last_synced_at?new Date(z.last_synced_at).toLocaleString():"—"),
+      el("td",{},el("button",{class:"sm ghost",onclick:()=>{state.zoneSel=z;state.view="records";document.querySelectorAll("nav.side a").forEach(x=>x.classList.toggle("active",x.dataset.view==="records"));render();}},"记录 →")),
+    ));});
+    card.append(tb);
+  }
+  m.append(card);
+}
+
+/* ---------- Records ---------- */
+async function viewRecords(m){
+  if(!state.providers.length){try{state.providers=(await api("/api/dns/providers")).providers||[]}catch{}}
+  if(!state.zones.length){try{state.zones=(await api("/api/dns/zones")).zones||[]}catch{}}
+  m.innerHTML="";
+  const head=el("div",{class:"row"},el("h2",{style:"margin:0"},"Records"));
+  const zsel=el("select",{onchange:e=>{state.zoneSel=state.zones.find(z=>z.id===e.target.value);render();}});
+  state.zones.forEach(z=>zsel.append(el("option",{value:z.id},z.zone_name)));
+  if(!state.zoneSel&&state.zones.length)state.zoneSel=state.zones[0];
+  if(state.zoneSel)zsel.value=state.zoneSel.id;
+  head.append(zsel);
+  if(state.zoneSel)head.append(el("button",{class:"sm",onclick:()=>openRecDlg(null)},"+ 新记录"));
+  m.append(head,el("p",{class:"sub"},"写操作直达 provider,成功后才更新本地缓存。"));
+  if(!state.zoneSel){m.append(el("div",{class:"empty"},"没有 zone。"));return;}
+  const d=await api(`/api/dns/zones/${state.zoneSel.id}/records`);state.records=d.records||[];
+  const card=el("div",{class:"card"});card.append(el("div",{class:"hd"},state.zoneSel.zone_name));
+  if(!state.records.length){card.append(el("div",{class:"empty"},"该 zone 暂无记录。"));}
+  else{
+    const tb=el("table");tb.append(el("tr",{html:"<th>类型</th><th>名称</th><th>内容</th><th>TTL</th><th>Prio</th><th>Proxied</th><th></th>"}));
+    state.records.forEach(r=>{tb.append(el("tr",{},
+      el("td",{},el("span",{class:"tag t"},r.type)),
+      el("td",{class:"mono"},r.name||"@"),
+      el("td",{class:"mono"},r.content),
+      el("td",{class:"muted"},r.ttl),
+      el("td",{class:"muted"},r.priority??"—"),
+      el("td",{},r.proxied?el("span",{class:"tag ok"},"是"):"—"),
+      el("td",{},el("button",{class:"sm ghost",onclick:()=>openRecDlg(r)},"编辑")," ",el("button",{class:"sm danger",onclick:()=>delRecord(r)},"删除")),
+    ));});
+    card.append(tb);
+  }
+  m.append(card);
+}
+let editingRec=null;
+function openRecDlg(r){
+  editingRec=r;$("#recForm").reset();
+  $("#recDlgTitle").textContent=r?"编辑记录":"新记录";
+  $("#rType").value=r?r.type:"A";$("#rName").value=r?(r.name||"@"):"";$("#rContent").value=r?r.content:"";
+  $("#rTTL").value=r?r.ttl:300;$("#rPrio").value=r&&r.priority!=null?r.priority:"";$("#rProxied").checked=!!(r&&r.proxied);
+  $("#recDlg").showModal();
+}
+$("#recForm").addEventListener("submit",async ev=>{
+  ev.preventDefault();
+  const body={type:$("#rType").value,name:$("#rName").value.trim(),content:$("#rContent").value.trim(),ttl:parseInt($("#rTTL").value||"300",10),proxied:$("#rProxied").checked};
+  const prio=$("#rPrio").value.trim();if(prio!=="")body.priority=parseInt(prio,10);
+  try{
+    if(editingRec){await api(`/api/dns/records/${editingRec.id}`,{method:"PATCH",body});toast("已更新","ok");}
+    else{await api(`/api/dns/zones/${state.zoneSel.id}/records`,{method:"POST",body});toast("已创建","ok");}
+    $("#recDlg").close();render();
+  }catch(e){toast((editingRec?"更新":"创建")+"失败:"+e.message,"err");}
+});
+async function delRecord(r){if(!confirm(`删除记录 ${r.type} ${r.name||"@"} → ${r.content}?会同时在 provider 删除。`))return;try{await api(`/api/dns/records/${r.id}`,{method:"DELETE"});toast("已删除","ok");render();}catch(e){toast(e.message,"err");}}
+
+/* ---------- Audit ---------- */
+async function viewAudit(m){
+  const d=await api("/api/dns/audit?limit=100");const rows=d.audit||[];
+  m.innerHTML="";m.append(el("h2",{},"Audit"),el("p",{class:"sub"},"谁、何时、改了什么。"));
+  const card=el("div",{class:"card"});card.append(el("div",{class:"hd"},"审计日志"));
+  if(!rows.length){card.append(el("div",{class:"empty"},"暂无记录。"));}
+  else{
+    const tb=el("table");tb.append(el("tr",{html:"<th>时间</th><th>操作</th><th>对象</th><th>详情</th>"}));
+    rows.forEach(a=>{
+      const det=a.new_value?JSON.stringify(a.new_value):(a.old_value?JSON.stringify(a.old_value):"");
+      tb.append(el("tr",{},
+        el("td",{class:"muted"},new Date(a.at).toLocaleString()),
+        el("td",{},el("span",{class:"tag"},a.action)),
+        el("td",{class:"mono muted"},(a.target||"").slice(0,16)),
+        el("td",{class:"mono muted",style:"max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"},det),
+      ));
+    });
+    card.append(tb);
+  }
+  m.append(card);
+}
+
+document.querySelectorAll("[data-close]").forEach(b=>b.onclick=e=>e.target.closest("dialog").close());
+boot();
+</script>
+</body>
+</html>

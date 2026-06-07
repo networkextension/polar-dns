@@ -1,0 +1,16 @@
+# DNS-as-Code example — apply with:
+#   DNS_TOKEN=<dock access token> DNS_WORKSPACE=<workspace id> \
+#     dnsctl apply -f zone.example.yaml -dry-run -k
+#
+# Drop -dry-run to apply. Add -prune to delete records in the zone that
+# are NOT listed here (SOA/NS are never auto-deleted).
+zone: example.com
+records:
+  - { type: A,     name: "@",   content: 203.0.113.10, ttl: 300 }
+  - { type: A,     name: www,   content: 203.0.113.10, ttl: 300 }
+  - { type: CNAME, name: blog,  content: www.example.com, ttl: 3600 }
+  - { type: MX,     name: "@",  content: mail.example.com, ttl: 3600, priority: 10 }
+  - { type: TXT,    name: "@",  content: "v=spf1 include:_spf.example.com ~all" }
+  - { type: TXT,    name: _acme-challenge, content: "placeholder-token" }
+  # bulk fan-out: one A record per name, all → 10.0.0.1
+  - { type: A,      content: 10.0.0.1, names: [node-a, node-b, node-c] }
