@@ -125,6 +125,29 @@ func (p *Plugin) listZones(ctx context.Context, wsID string) ([]ZoneRow, error) 
 	return out, rows.Err()
 }
 
+// listLocalZones returns the workspace's zones backed by a 'local' provider —
+// the self-hosted authoritative zones the dns resolver renders. Ordered by
+// name for a deterministic export (and a stable ETag).
+func (p *Plugin) listLocalZones(ctx context.Context, wsID string) ([]ZoneRow, error) {
+	rows, err := p.DB.QueryContext(ctx, `
+		SELECT z.id, z.workspace_id, z.provider_id, z.zone_name, z.remote_zone_id, z.serial, z.last_synced_at, z.created_at
+		FROM dns_zone z JOIN dns_provider pr ON pr.id = z.provider_id
+		WHERE z.workspace_id=$1 AND pr.provider_type=$2 ORDER BY z.zone_name`, wsID, localType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ZoneRow{}
+	for rows.Next() {
+		var z ZoneRow
+		if err := rows.Scan(&z.ID, &z.WorkspaceID, &z.ProviderID, &z.ZoneName, &z.RemoteZoneID, &z.Serial, &z.LastSyncedAt, &z.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, z)
+	}
+	return out, rows.Err()
+}
+
 // getZone loads a full zone row scoped to the workspace. Returns
 // sql.ErrNoRows when absent.
 func (p *Plugin) getZone(ctx context.Context, wsID, zoneID string) (ZoneRow, error) {
