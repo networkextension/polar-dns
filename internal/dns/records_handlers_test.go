@@ -41,6 +41,29 @@ func TestApplyRecordPatch_PriorityAndProxied(t *testing.T) {
 	}
 }
 
+func TestValidateView(t *testing.T) {
+	cases := []struct {
+		in     string
+		want   string
+		wantOK bool
+	}{
+		{"", "any", true}, // default
+		{"any", "any", true},
+		{"public", "public", true},
+		{"private", "private", true},
+		{" Private ", "private", true}, // trimmed + lowercased
+		{"PUBLIC", "public", true},
+		{"internal", "", false}, // not a valid view
+		{"foo", "", false},
+	}
+	for _, tc := range cases {
+		got, ok := validateView(tc.in)
+		if ok != tc.wantOK || got != tc.want {
+			t.Errorf("validateView(%q)=(%q,%v) want (%q,%v)", tc.in, got, ok, tc.want, tc.wantOK)
+		}
+	}
+}
+
 func TestRecordRowToRecord(t *testing.T) {
 	pr := 5
 	row := RecordRow{RemoteRecordID: "9", Type: "MX", Name: "@", Content: "mail", TTL: 120, Priority: &pr, Proxied: false}

@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+// execer is the subset of *sql.DB / *sql.Tx used by the write-path store
+// helpers, so a handler can run a cache write + serial bump in one
+// transaction (pass the *sql.Tx) or stand-alone (pass p.DB).
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // ZoneRow is a dns_zone row.
 type ZoneRow struct {
 	ID           string     `json:"id"`
@@ -18,6 +25,7 @@ type ZoneRow struct {
 	ProviderID   string     `json:"provider_id"`
 	ZoneName     string     `json:"zone_name"`
 	RemoteZoneID string     `json:"remote_zone_id"`
+	Serial       int64      `json:"serial"`
 	LastSyncedAt *time.Time `json:"last_synced_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 }
@@ -34,6 +42,7 @@ type RecordRow struct {
 	TTL            int       `json:"ttl"`
 	Priority       *int      `json:"priority,omitempty"`
 	Proxied        bool      `json:"proxied"`
+	View           string    `json:"view"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -49,6 +58,29 @@ func (p *Plugin) upsertZone(ctx context.Context, tx *sql.Tx, wsID, providerID, z
 		RETURNING id`,
 		newID("dz_"), wsID, providerID, zoneName, remoteZoneID).Scan(&id)
 	return id, err
+}
+
+// createLocalZone inserts a zone directly (no remote discovery), used for
+// 'local' providers where zones are declared rather than synced. The remote
+// handle is the zone name itself; serial starts at the column default (1).
+// Returns the created row, or sql.ErrNoRows-free conflict as an error.
+func (p *Plugin) createLocalZone(ctx context.Context, wsID, providerID, zoneName string) (ZoneRow, error) {
+	var z ZoneRow
+	err := p.DB.QueryRowContext(ctx, `
+		INSERT INTO dns_zone (id, workspace_id, provider_id, zone_name, remote_zone_id, created_at)
+		VALUES ($1,$2,$3,$4,$4, now())
+		RETURNING id, workspace_id, provider_id, zone_name, remote_zone_id, serial, last_synced_at, created_at`,
+		newID("dz_"), wsID, providerID, zoneName).
+		Scan(&z.ID, &z.WorkspaceID, &z.ProviderID, &z.ZoneName, &z.RemoteZoneID, &z.Serial, &z.LastSyncedAt, &z.CreatedAt)
+	return z, err
+}
+
+// bumpZoneSerial increments a zone's monotonic serial. Runs on the same
+// handle (tx) as the record write so the version reflects the committed
+// change. Bumped for every zone; only 'local' serials are consumed downstream.
+func (p *Plugin) bumpZoneSerial(ctx context.Context, ex execer, zoneID string) error {
+	_, err := ex.ExecContext(ctx, `UPDATE dns_zone SET serial = serial + 1 WHERE id=$1`, zoneID)
+	return err
 }
 
 // replaceZoneRecords replaces all cached records for a zone with a fresh
@@ -76,7 +108,7 @@ func (p *Plugin) replaceZoneRecords(ctx context.Context, tx *sql.Tx, wsID, zoneI
 
 func (p *Plugin) listZones(ctx context.Context, wsID string) ([]ZoneRow, error) {
 	rows, err := p.DB.QueryContext(ctx, `
-		SELECT id, workspace_id, provider_id, zone_name, remote_zone_id, last_synced_at, created_at
+		SELECT id, workspace_id, provider_id, zone_name, remote_zone_id, serial, last_synced_at, created_at
 		FROM dns_zone WHERE workspace_id=$1 ORDER BY zone_name`, wsID)
 	if err != nil {
 		return nil, err
@@ -85,7 +117,7 @@ func (p *Plugin) listZones(ctx context.Context, wsID string) ([]ZoneRow, error) 
 	out := []ZoneRow{}
 	for rows.Next() {
 		var z ZoneRow
-		if err := rows.Scan(&z.ID, &z.WorkspaceID, &z.ProviderID, &z.ZoneName, &z.RemoteZoneID, &z.LastSyncedAt, &z.CreatedAt); err != nil {
+		if err := rows.Scan(&z.ID, &z.WorkspaceID, &z.ProviderID, &z.ZoneName, &z.RemoteZoneID, &z.Serial, &z.LastSyncedAt, &z.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, z)
@@ -98,9 +130,9 @@ func (p *Plugin) listZones(ctx context.Context, wsID string) ([]ZoneRow, error) 
 func (p *Plugin) getZone(ctx context.Context, wsID, zoneID string) (ZoneRow, error) {
 	var z ZoneRow
 	err := p.DB.QueryRowContext(ctx, `
-		SELECT id, workspace_id, provider_id, zone_name, remote_zone_id, last_synced_at, created_at
+		SELECT id, workspace_id, provider_id, zone_name, remote_zone_id, serial, last_synced_at, created_at
 		FROM dns_zone WHERE workspace_id=$1 AND id=$2`, wsID, zoneID).
-		Scan(&z.ID, &z.WorkspaceID, &z.ProviderID, &z.ZoneName, &z.RemoteZoneID, &z.LastSyncedAt, &z.CreatedAt)
+		Scan(&z.ID, &z.WorkspaceID, &z.ProviderID, &z.ZoneName, &z.RemoteZoneID, &z.Serial, &z.LastSyncedAt, &z.CreatedAt)
 	return z, err
 }
 
@@ -117,7 +149,7 @@ func (p *Plugin) zoneExists(ctx context.Context, wsID, zoneID string) (bool, err
 
 func (p *Plugin) listRecordsByZone(ctx context.Context, wsID, zoneID string) ([]RecordRow, error) {
 	rows, err := p.DB.QueryContext(ctx, `
-		SELECT id, workspace_id, zone_id, remote_record_id, type, name, content, ttl, priority, proxied, updated_at
+		SELECT id, workspace_id, zone_id, remote_record_id, type, name, content, ttl, priority, proxied, view, updated_at
 		FROM dns_record WHERE workspace_id=$1 AND zone_id=$2 ORDER BY name, type`, wsID, zoneID)
 	if err != nil {
 		return nil, err
@@ -127,7 +159,7 @@ func (p *Plugin) listRecordsByZone(ctx context.Context, wsID, zoneID string) ([]
 	for rows.Next() {
 		var r RecordRow
 		var pr sql.NullInt64
-		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.ZoneID, &r.RemoteRecordID, &r.Type, &r.Name, &r.Content, &r.TTL, &pr, &r.Proxied, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.WorkspaceID, &r.ZoneID, &r.RemoteRecordID, &r.Type, &r.Name, &r.Content, &r.TTL, &pr, &r.Proxied, &r.View, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		if pr.Valid {

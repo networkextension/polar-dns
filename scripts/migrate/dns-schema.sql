@@ -44,6 +44,10 @@ CREATE TABLE IF NOT EXISTS dns_zone (
     provider_id    TEXT NOT NULL REFERENCES dns_provider(id) ON DELETE CASCADE,
     zone_name      TEXT NOT NULL,                -- example.com
     remote_zone_id TEXT NOT NULL,
+    serial         BIGINT NOT NULL DEFAULT 1,    -- monotonic per-zone version; bumped on every
+                                                 -- record write-through. Consumed by the dns
+                                                 -- resolver (BIND SOA serial). Meaningful for
+                                                 -- 'local' zones; harmless elsewhere.
     last_synced_at TIMESTAMPTZ,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (workspace_id, provider_id, zone_name)
@@ -62,10 +66,17 @@ CREATE TABLE IF NOT EXISTS dns_record (
     ttl              INTEGER NOT NULL DEFAULT 300,
     priority         INTEGER,                    -- MX/SRV
     proxied          BOOLEAN NOT NULL DEFAULT FALSE,  -- Cloudflare-only; ignored elsewhere
+    view             TEXT NOT NULL DEFAULT 'any',     -- any|public|private; split-horizon dimension
+                                                      -- for 'local' zones. Other providers ignore it.
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (zone_id, remote_record_id)
 );
 CREATE INDEX IF NOT EXISTS idx_dns_record_zone ON dns_record(zone_id);
+
+-- Additive columns for existing databases (CREATE TABLE IF NOT EXISTS above is a
+-- no-op once the table exists, so re-running the schema must ALTER in new columns).
+ALTER TABLE dns_zone   ADD COLUMN IF NOT EXISTS serial BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE dns_record ADD COLUMN IF NOT EXISTS view   TEXT   NOT NULL DEFAULT 'any';
 
 -- Audit trail: who, when, what, old/new.
 CREATE TABLE IF NOT EXISTS dns_audit_log (

@@ -26,6 +26,7 @@ type createRecordReq struct {
 	TTL      int    `json:"ttl"`
 	Priority *int   `json:"priority"`
 	Proxied  bool   `json:"proxied"`
+	View     string `json:"view"`
 }
 
 type updateRecordReq struct {
@@ -35,6 +36,22 @@ type updateRecordReq struct {
 	TTL      *int    `json:"ttl"`
 	Priority *int    `json:"priority"`
 	Proxied  *bool   `json:"proxied"`
+	View     *string `json:"view"`
+}
+
+// validateView normalizes the split-horizon view of a record. Empty defaults
+// to "any". Only "any"/"public"/"private" are accepted. Pure — unit-tested
+// without a DB. The view is local-cache metadata only; it is never sent to a
+// provider (Cloudflare/Name.com never see it).
+func validateView(s string) (string, bool) {
+	switch v := strings.ToLower(strings.TrimSpace(s)); v {
+	case "":
+		return "any", true
+	case "any", "public", "private":
+		return v, true
+	default:
+		return "", false
+	}
 }
 
 func recordRowToRecord(r RecordRow) Record {
@@ -92,6 +109,11 @@ func (p *Plugin) handleRecordCreate(c *gin.Context) {
 	if req.TTL <= 0 {
 		req.TTL = 300
 	}
+	view, ok := validateView(req.View)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "view must be any, public, or private"})
+		return
+	}
 
 	zone, err := p.getZone(ctx, wsID, zoneID)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -111,6 +133,10 @@ func (p *Plugin) handleRecordCreate(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "provider " + zone.ProviderID + " does not support proxied records"})
 		return
 	}
+	if view != "any" && prov.Type() != localType {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a non-default view is only supported on local zones"})
+		return
+	}
 
 	created, err := prov.CreateRecord(ctx, zone.RemoteZoneID, Record{
 		Type: req.Type, Name: req.Name, Content: req.Content, TTL: req.TTL, Priority: req.Priority, Proxied: req.Proxied,
@@ -124,8 +150,9 @@ func (p *Plugin) handleRecordCreate(c *gin.Context) {
 		ID: newID("dr_"), WorkspaceID: wsID, ZoneID: zoneID,
 		RemoteRecordID: created.RemoteID, Type: created.Type, Name: created.Name,
 		Content: created.Content, TTL: created.TTL, Priority: created.Priority, Proxied: created.Proxied,
+		View: view,
 	}
-	if err := p.insertRecord(ctx, row); err != nil {
+	if err := p.writeRecordTx(ctx, zoneID, func(tx *sql.Tx) error { return p.insertRecord(ctx, tx, row) }); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cache insert (record created at provider): " + err.Error()})
 		return
 	}
@@ -171,6 +198,23 @@ func (p *Plugin) handleRecordUpdate(c *gin.Context) {
 		return
 	}
 
+	// view is local-cache metadata (not part of the domain Record sent to the
+	// provider), so it is patched onto the row directly rather than via
+	// applyRecordPatch.
+	view := cur.View
+	if req.View != nil {
+		v, ok := validateView(*req.View)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "view must be any, public, or private"})
+			return
+		}
+		if v != "any" && prov.Type() != localType {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "a non-default view is only supported on local zones"})
+			return
+		}
+		view = v
+	}
+
 	updated, err := prov.UpdateRecord(ctx, zone.RemoteZoneID, merged)
 	if err != nil {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "update at provider: " + err.Error()})
@@ -185,7 +229,8 @@ func (p *Plugin) handleRecordUpdate(c *gin.Context) {
 	row.TTL = updated.TTL
 	row.Priority = updated.Priority
 	row.Proxied = updated.Proxied
-	if err := p.updateRecordRow(ctx, row); err != nil {
+	row.View = view
+	if err := p.writeRecordTx(ctx, row.ZoneID, func(tx *sql.Tx) error { return p.updateRecordRow(ctx, tx, row) }); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cache update (record updated at provider): " + err.Error()})
 		return
 	}
@@ -223,7 +268,10 @@ func (p *Plugin) handleRecordDelete(c *gin.Context) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": "delete at provider: " + err.Error()})
 		return
 	}
-	if _, err := p.deleteRecord(ctx, wsID, recordID); err != nil {
+	if err := p.writeRecordTx(ctx, cur.ZoneID, func(tx *sql.Tx) error {
+		_, derr := p.deleteRecord(ctx, tx, wsID, recordID)
+		return derr
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "cache delete (record deleted at provider): " + err.Error()})
 		return
 	}

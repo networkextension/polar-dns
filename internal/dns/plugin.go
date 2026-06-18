@@ -151,6 +151,9 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			auth.GET("/zones", p.handleZonesList)
 			auth.GET("/zones/:id/records", p.handleZoneRecords)
 
+			// Declare a zone under a local (self-hosted) provider.
+			auth.POST("/zones", p.handleZoneCreate)
+
 			// Record write-through (provider-first, then cache + audit).
 			auth.POST("/zones/:id/records", p.handleRecordCreate)
 			auth.PATCH("/records/:id", p.handleRecordUpdate)
