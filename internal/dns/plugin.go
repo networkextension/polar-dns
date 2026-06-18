@@ -154,6 +154,9 @@ func (p *Plugin) RegisterRoutes(r gin.IRouter) {
 			// Declare a zone under a local (self-hosted) provider.
 			auth.POST("/zones", p.handleZoneCreate)
 
+			// Snapshot of local zones for the split-horizon resolver agent.
+			auth.GET("/export", p.handleExport)
+
 			// Record write-through (provider-first, then cache + audit).
 			auth.POST("/zones/:id/records", p.handleRecordCreate)
 			auth.PATCH("/records/:id", p.handleRecordUpdate)
