@@ -93,13 +93,26 @@
     <div class="hd">添加 Provider</div>
     <div class="bd">
       <label class="f">类型
-        <select id="pType"><option value="namecom">Name.com</option><option value="cloudflare">Cloudflare</option></select>
+        <select id="pType"><option value="namecom">Name.com</option><option value="cloudflare">Cloudflare</option><option value="local">Local (自托管权威)</option></select>
       </label>
       <label class="f">名称<input id="pName" placeholder="如 cf-main" required></label>
       <div id="credFields"></div>
       <label class="f">HTTP 代理(可选)<input id="pProxy" placeholder="http://127.0.0.1:7890"></label>
     </div>
     <div class="ft"><button type="button" class="ghost" data-close>取消</button><button id="pSave">保存</button></div>
+  </form>
+</dialog>
+
+<!-- create-zone dialog (local provider only) -->
+<dialog id="zoneDlg">
+  <form method="dialog" id="zoneForm">
+    <div class="hd">新建 zone</div>
+    <div class="bd">
+      <label class="f">Provider (仅 local)<select id="zProv"></select></label>
+      <label class="f">域名<input id="zName" placeholder="如 4950.store" required></label>
+      <p class="sub" style="margin:4px 0 0">自托管权威 zone;建好后可在「记录」里加 public/private 记录。</p>
+    </div>
+    <div class="ft"><button type="button" class="ghost" data-close>取消</button><button id="zSave">保存</button></div>
   </form>
 </dialog>
 
@@ -118,8 +131,12 @@
       <div class="row">
         <label class="f" style="width:120px">TTL<input id="rTTL" type="number" value="300"></label>
         <label class="f" style="width:120px">优先级 (MX/SRV)<input id="rPrio" type="number" placeholder="—"></label>
+        <label class="f" style="width:140px">View (split-horizon)
+          <select id="rView"><option value="any">any (默认)</option><option value="public">public</option><option value="private">private</option></select>
+        </label>
         <label class="f" id="rProxiedWrap" style="flex-direction:row;align-items:center;gap:6px;margin-top:18px"><input type="checkbox" id="rProxied" style="width:auto"> Proxied (CF)</label>
       </div>
+      <p class="sub" id="rViewHint" style="margin:0;display:none">public/private 仅 local(自托管权威)zone 支持;当前 zone 非 local,已锁定为 any。</p>
     </div>
     <div class="ft"><button type="button" class="ghost" data-close>取消</button><button id="rSave">保存</button></div>
   </form>
@@ -230,7 +247,7 @@ async function viewProviders(m){
 async function syncProvider(p){toast("同步 "+p.name+" …");try{const r=await api(`/api/dns/providers/${p.id}/sync`,{method:"POST"});toast(`同步完成:${r.zones} zones / ${r.records} records`,"ok");}catch(e){toast("同步失败:"+e.message,"err");}}
 async function delProvider(p){if(!confirm(`删除 provider「${p.name}」?其 zone/record 缓存会级联删除。`))return;try{await api(`/api/dns/providers/${p.id}`,{method:"DELETE"});toast("已删除","ok");render();}catch(e){toast(e.message,"err");}}
 
-const CRED={namecom:[["username","用户名"],["token","API Token"]],cloudflare:[["api_token","API Token"]]};
+const CRED={namecom:[["username","用户名"],["token","API Token"]],cloudflare:[["api_token","API Token"]],local:[]};
 let editingProv=null;
 function renderCredFields(){const t=$("#pType").value;const box=$("#credFields");box.innerHTML="";const editing=!!(editingProv&&editingProv.id);CRED[t].forEach(([k,label])=>{const attrs={id:"cred_"+k,"data-cred":k};if(editing)attrs.placeholder="留空则不变";else attrs.required="true";box.append(el("label",{class:"f"},label+(editing?"(留空不变)":""),el("input",attrs)));});}
 function openProvDlg(prov){
@@ -265,10 +282,15 @@ $("#provForm").addEventListener("submit",async(ev)=>{
 
 /* ---------- Zones ---------- */
 async function viewZones(m){
+  if(!state.providers.length){try{state.providers=(await api("/api/dns/providers")).providers||[]}catch{}}
   const d=await api("/api/dns/zones");state.zones=d.zones||[];
-  m.innerHTML="";m.append(el("h2",{},"Zones"),el("p",{class:"sub"},"已同步的区(远端为准,本地为缓存)。点「记录」查看。"));
-  const card=el("div",{class:"card"});card.append(el("div",{class:"hd"},"区"));
-  if(!state.zones.length){card.append(el("div",{class:"empty"},"暂无 zone。到 Providers 点「同步」拉取。"));}
+  const localProvs=state.providers.filter(p=>p.provider_type==="local");
+  m.innerHTML="";m.append(el("h2",{},"Zones"),el("p",{class:"sub"},"远端 provider 的区靠「同步」拉取;local(自托管权威)的区在此手动新建。"));
+  const card=el("div",{class:"card"});
+  const hd=el("div",{class:"hd"},el("span",{class:"grow"},"区"));
+  if(localProvs.length)hd.append(el("button",{class:"sm",onclick:()=>openZoneDlg(localProvs)},"+ 新建 zone"));
+  card.append(hd);
+  if(!state.zones.length){card.append(el("div",{class:"empty"},localProvs.length?"暂无 zone。点右上「新建 zone」(local),或到 Providers 点「同步」拉取远端区。":"暂无 zone。到 Providers 点「同步」拉取(或先建一个 local provider 再新建 zone)。"));}
   else{
     const tb=el("table");tb.append(el("tr",{html:"<th>域名</th><th>Provider</th><th>最近同步</th><th></th>"}));
     const pmap=Object.fromEntries(state.providers.map(p=>[p.id,p.name]));
@@ -282,6 +304,21 @@ async function viewZones(m){
   }
   m.append(card);
 }
+function openZoneDlg(localProvs){
+  $("#zoneForm").reset();
+  const sel=$("#zProv");sel.innerHTML="";
+  localProvs.forEach(p=>sel.append(el("option",{value:p.id},p.name)));
+  $("#zoneDlg").showModal();
+}
+$("#zoneForm").addEventListener("submit",async ev=>{
+  ev.preventDefault();
+  const provider_id=$("#zProv").value;const zone_name=$("#zName").value.trim();
+  if(!provider_id||!zone_name){toast("provider 和域名必填","err");return;}
+  try{
+    await api("/api/dns/zones",{method:"POST",body:{provider_id,zone_name}});
+    toast("已创建 zone "+zone_name,"ok");$("#zoneDlg").close();render();
+  }catch(e){toast("创建失败:"+e.message,"err");}
+});
 
 /* ---------- Records ---------- */
 async function viewRecords(m){
@@ -301,13 +338,14 @@ async function viewRecords(m){
   const card=el("div",{class:"card"});card.append(el("div",{class:"hd"},state.zoneSel.zone_name));
   if(!state.records.length){card.append(el("div",{class:"empty"},"该 zone 暂无记录。"));}
   else{
-    const tb=el("table");tb.append(el("tr",{html:"<th>类型</th><th>名称</th><th>内容</th><th>TTL</th><th>Prio</th><th>Proxied</th><th></th>"}));
+    const tb=el("table");tb.append(el("tr",{html:"<th>类型</th><th>名称</th><th>内容</th><th>TTL</th><th>Prio</th><th>View</th><th>Proxied</th><th></th>"}));
     state.records.forEach(r=>{tb.append(el("tr",{},
       el("td",{},el("span",{class:"tag t"},r.type)),
       el("td",{class:"mono"},r.name||"@"),
       el("td",{class:"mono"},r.content),
       el("td",{class:"muted"},r.ttl),
       el("td",{class:"muted"},r.priority??"—"),
+      el("td",{},(r.view&&r.view!=="any")?el("span",{class:"tag ok"},r.view):el("span",{class:"muted"},"any")),
       el("td",{},r.proxied?el("span",{class:"tag ok"},"是"):"—"),
       el("td",{},el("button",{class:"sm ghost",onclick:()=>openRecDlg(r)},"编辑")," ",el("button",{class:"sm danger",onclick:()=>delRecord(r)},"删除")),
     ));});
@@ -321,11 +359,18 @@ function openRecDlg(r){
   $("#recDlgTitle").textContent=r?"编辑记录":"新记录";
   $("#rType").value=r?r.type:"A";$("#rName").value=r?(r.name||"@"):"";$("#rContent").value=r?r.content:"";
   $("#rTTL").value=r?r.ttl:300;$("#rPrio").value=r&&r.priority!=null?r.priority:"";$("#rProxied").checked=!!(r&&r.proxied);
+  // split-horizon view: public/private only on local zones; lock to "any" otherwise (matches backend)
+  const prov=state.providers.find(p=>p.id===state.zoneSel?.provider_id);
+  const isLocal=prov?.provider_type==="local";
+  const vsel=$("#rView");vsel.value=r&&r.view?r.view:"any";
+  Array.from(vsel.options).forEach(o=>{if(o.value!=="any")o.disabled=!isLocal;});
+  if(!isLocal)vsel.value="any";
+  $("#rViewHint").style.display=isLocal?"none":"block";
   $("#recDlg").showModal();
 }
 $("#recForm").addEventListener("submit",async ev=>{
   ev.preventDefault();
-  const body={type:$("#rType").value,name:$("#rName").value.trim(),content:$("#rContent").value.trim(),ttl:parseInt($("#rTTL").value||"300",10),proxied:$("#rProxied").checked};
+  const body={type:$("#rType").value,name:$("#rName").value.trim(),content:$("#rContent").value.trim(),ttl:parseInt($("#rTTL").value||"300",10),proxied:$("#rProxied").checked,view:$("#rView").value};
   const prio=$("#rPrio").value.trim();if(prio!=="")body.priority=parseInt(prio,10);
   try{
     if(editingRec){await api(`/api/dns/records/${editingRec.id}`,{method:"PATCH",body});toast("已更新","ok");}
